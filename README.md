@@ -1,609 +1,170 @@
 # NovaWallet Ledger Service
 
-A simplified wallet ledger API built with .NET 8 and SQL Server for the FirstBank Digital Factory backend take-home exercise.
+.NET 8 / SQL Server 2022 wallet ledger. Money is integer kobo (`long` / SQL `BIGINT`); NGN is the only currency. A transfer commits both balances, two ledger entries, two audit entries and its durable idempotency response in one SQL transaction.
 
-The implementation is designed around one primary requirement: **money must remain correct under retries and concurrent requests**.
+## Run locally
 
-> This README describes the intended final implementation. After the coding agent completes the project, verify every command, route, port, package, and architectural statement against the actual code before submission.
+Prerequisites: Docker Engine with Compose v2 and Linux containers on an x64 machine. Allocate enough memory for SQL Server (at least 2 GB for SQL Server, plus the API/build). Initial startup downloads the SQL Server and .NET images. A local .NET SDK is not needed for Docker startup.
 
----
-
-## Features
-
-- Create wallet with zero starting balance
-- Retrieve wallet balance in NGN/kobo
-- Credit wallet
-- Atomic wallet-to-wallet transfer
-- Durable transfer idempotency
-- Paginated wallet statement
-- Daily outbound transfer limit reset at midnight WAT
-- Append-only audit trail
-- JWT bearer authentication
-- FluentValidation request validation
-- RFC 7807 Problem Details
-- Swagger/OpenAPI
-- Docker Compose startup
-- Automated unit and SQL Server integration tests
-- Concurrency/load-focused transfer tests
-
----
-
-## Money representation
-
-All monetary values are integer kobo.
-
-```text
-₦1.00       = 100 kobo
-₦10,000     = 1,000,000 kobo
-₦500,000    = 50,000,000 kobo
+```sh
+docker compose up --build
 ```
 
-C# uses:
+`docker compose up` is sufficient on a fresh checkout; use `--build` after changing source code. The database health check gates API startup, and the API retries SQL migration failures up to 30 attempts with two seconds between retries. The API does not accept requests before migration completes.
 
-```csharp
-long
-```
-
-SQL Server uses:
-
-```sql
-BIGINT
-```
-
-No floating-point type is used in the money path.
-
----
-
-## Solution structure
-
-```text
-NovaWallet.sln
-
-NovaWallet.Api/
-NovaWallet.Domain/
-NovaWallet.Repositories/
-NovaWallet.Service/
-NovaWallet.UnitTests/
-NovaWallet.IntegrationTests/
-
-README.md
-AI_USAGE.md
-docs/
-  ARCHITECTURE.md
-  PROMPT.md
-
-docker-compose.yml
-Dockerfile
-```
-
-### Layer responsibilities
-
-**Domain**
-
-Business entities, enums, repository contracts, and domain concepts.
-
-**Repository**
-
-EF Core, SQL Server, migrations, indexes, constraints, and concurrency-specific persistence.
-
-**Services**
-
-Wallet and transfer orchestration, idempotency, daily-limit logic, and statement behavior.
-
-**API**
-
-HTTP contracts, JWT, Swagger, Problem Details, dependency injection, and request pipeline.
-
----
-
-## Architecture summary
-
-The service stores a current wallet balance for fast reads and writes one transaction record for every wallet balance mutation.
-
-A wallet-to-wallet transfer produces:
-
-```text
-1 source balance debit
-1 destination balance credit
-1 source WalletTransaction
-1 destination WalletTransaction
-1 source AuditLog
-1 destination AuditLog
-1 durable IdempotencyRecord
-```
-
-All of these changes are committed in one SQL transaction.
-
-See [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) for the detailed design.
-
-The coding-agent implementation plan is in [docs/PROMPT.md](./docs/PROMPT.md).
-
----
-
-
-## Validation approach
-
-FluentValidation is used for request/input validation.
-
-During design exploration, simpler approaches were considered, including inline controller checks, DataAnnotations, and lightweight format or regex checks. I chose FluentValidation as the consistent API-boundary validation strategy because it provides a cleaner separation of concerns, improves maintainability, keeps controllers focused on HTTP orchestration, and scales better as request models become more complex or contain nested object graphs.
-
-The validation boundary is deliberate:
-
-```text
-FluentValidation
-    -> request shape and basic input rules
-
-NovaWallet.Service
-    -> stateful and financial business rules
-
-SQL Server
-    -> final data-integrity constraints
-```
-
-Handled by FluentValidation:
-
-```text
-required customer ID
-customer ID length
-positive AmountKobo
-required source/destination wallet IDs
-source wallet != destination wallet
-pagination bounds
-idempotency-key format/length at the API boundary
-```
-
-Intentionally **not** handled by FluentValidation:
-
-```text
-wallet existence
-insufficient funds
-daily outbound limit
-duplicate customer
-idempotency conflicts
-current wallet balance
-```
-
-Those rules depend on persisted state and belong in `NovaWallet.Service`. Where correctness depends on concurrency, they execute inside the appropriate database transaction and locking boundary.
-
-SQL Server constraints remain the final integrity layer.
-
-Validation failures are normalized into the same RFC 7807 Problem Details format as other API errors so clients receive one consistent error contract.
-
-## Concurrency model
-
-Correctness is enforced at the SQL Server boundary rather than with application-memory locks.
-
-The transfer flow:
-
-1. acquires a transaction-scoped lock for the idempotency key;
-2. locks both participating wallet rows using `UPDLOCK, HOLDLOCK`;
-3. acquires wallet locks in deterministic ID order;
-4. checks source funds;
-5. checks the current WAT daily outbound total;
-6. applies source debit and destination credit;
-7. writes transaction and audit records;
-8. persists the idempotent response;
-9. commits once.
-
-This prevents concurrent requests from independently observing the same spendable source balance.
-
-The database also has a `CHECK (BalanceKobo >= 0)` constraint as a final safety invariant.
-
----
-
-## Idempotency
-
-`POST /api/transfers` requires:
-
-```http
-Idempotency-Key: <unique-key>
-```
-
-Behavior:
-
-| Request | Result |
+| Service | URL |
 |---|---|
-| new key + valid payload | transfer is processed |
-| same key + same payload | stored result is replayed; money does not move again |
-| same key + different payload | `409 Conflict` |
-| missing key | `400 Bad Request` |
+| API | http://localhost:8080 |
+| Swagger UI | http://localhost:8080/swagger |
+| OpenAPI JSON | http://localhost:8080/swagger/v1/swagger.json |
+| Local SQL connection | localhost,14333 |
 
-The payload identity is a SHA-256 hash of a canonical representation of:
+Ports bind to localhost. Compose uses a persistent `ledger-data` volume. `docker compose down` stops the services and retains data; `docker compose down -v` also deletes that local data.
 
-```text
-SourceWalletId
-DestinationWalletId
-AmountKobo
+## Development JWT and sample workflow
+
+Compose runs in Development. `POST /dev/token` issues a one-hour token for `local-evaluator`, without a request body. The route is absent in Production. In Swagger, paste the token into **Authorize** (the UI supplies the Bearer prefix).
+
+The following Bash examples use `curl` and `jq`:
+
+```sh
+BASE=http://localhost:8080
+TOKEN=$(curl -fsS -X POST "$BASE/dev/token" | jq -r .accessToken)
+SUFFIX=$(date +%s)
+SOURCE=$(curl -fsS "$BASE/api/wallets" \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"customerId\":\"source-$SUFFIX\"}" | jq -r .id)
+DEST=$(curl -fsS "$BASE/api/wallets" \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"customerId\":\"destination-$SUFFIX\"}" | jq -r .id)
+
+curl -fsS "$BASE/api/wallets/$SOURCE/credits" \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"amountKobo":10000000}'
+
+PAYLOAD="{\"sourceWalletId\":\"$SOURCE\",\"destinationWalletId\":\"$DEST\",\"amountKobo\":1000000}"
+curl -fsS "$BASE/api/transfers" \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -H "Idempotency-Key: demo-$SUFFIX" -d "$PAYLOAD"
+
+# Repeat the transfer command to replay the original result without moving money again.
+curl -fsS "$BASE/api/wallets/$SOURCE/balance" -H "Authorization: Bearer $TOKEN"
+curl -fsS "$BASE/api/wallets/$DEST/balance" -H "Authorization: Bearer $TOKEN"
+curl -fsS "$BASE/api/wallets/$SOURCE/statement?page=1&pageSize=20" -H "Authorization: Bearer $TOKEN"
 ```
 
-Idempotency state is stored in SQL Server and therefore does not depend on one API process remaining alive.
+The source ends at 9,000,000 kobo and destination at 1,000,000 kobo. One naira is 100 kobo. For an automated PowerShell walkthrough, including assertions and replay:
 
----
-
-## Daily outbound limit
-
-Default:
-
-```text
-₦500,000/day
-50,000,000 kobo/day
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/smoke.ps1
 ```
 
-The value is server-side configuration.
+Each smoke run creates two new demo wallets in the local database.
 
-The limit resets at midnight WAT (`UTC+01:00`).
+## API contracts
 
-All timestamps are stored in UTC. The service converts WAT midnight boundaries to UTC for the daily outbound query.
+All five functional endpoints require a valid JWT with a nonempty `sub` claim of at most 200 characters.
 
-The daily-limit query executes while the source wallet is locked inside the same transfer transaction, preventing concurrent requests from both passing a stale limit check.
+| Method / route | Request / behavior |
+|---|---|
+| `POST /api/wallets` | `{"customerId":"CUST-001"}`; returns 201, zero balance and NGN |
+| `GET /api/wallets/{id}/balance` | Wallet ID, customer ID, integer balance and currency |
+| `POST /api/wallets/{id}/credits` | `{"amountKobo":10000000}`; positive integer; returns ledger entry |
+| `POST /api/transfers` | Source/destination GUIDs and positive `amountKobo`; requires `Idempotency-Key`; returns 200 |
+| `GET /api/wallets/{id}/statement?page=1&pageSize=20` | `{page,pageSize,totalCount,items}`; page size 1–100 |
 
----
+Statements order by `(CreatedAtUtc DESC, Id DESC)`, so ties are stable. Offset pagination is not a snapshot across separate HTTP requests: new transactions can shift later pages. Types are serialized as numbers: Credit = 1, TransferDebit = 2, TransferCredit = 3.
 
-## API
+FluentValidation handles input shape. Stateful financial decisions execute in services inside the SQL transaction. Automatic model-binding errors, authentication failures and application exceptions use Problem Details with a `code` extension.
 
-Expected routes:
+| Status | Codes |
+|---|---|
+| 400 | `validation` |
+| 401 / 403 | `unauthorized` / `forbidden` |
+| 404 | `wallet_not_found` (or `not_found` for an unmapped route) |
+| 409 | `duplicate_customer`, `idempotency_conflict` |
+| 422 | `insufficient_funds`, `daily_limit_exceeded`, `balance_overflow` |
+| 500 | `internal_error` |
 
-```http
-POST /api/wallets
-GET  /api/wallets/{walletId}/balance
-POST /api/wallets/{walletId}/credits
-POST /api/transfers
-GET  /api/wallets/{walletId}/statement?page=1&pageSize=20
-```
-
-All functional endpoints require a JWT bearer token.
-
-### Create wallet
-
-```http
-POST /api/wallets
-Authorization: Bearer <token>
-Content-Type: application/json
-```
-
-```json
-{
-  "customerId": "CUST-001"
-}
-```
-
-### Get balance
-
-```http
-GET /api/wallets/{walletId}/balance
-Authorization: Bearer <token>
-```
-
-### Credit wallet
-
-```http
-POST /api/wallets/{walletId}/credits
-Authorization: Bearer <token>
-Content-Type: application/json
-```
-
-```json
-{
-  "amountKobo": 10000000
-}
-```
-
-### Transfer
-
-```http
-POST /api/transfers
-Authorization: Bearer <token>
-Idempotency-Key: demo-transfer-001
-Content-Type: application/json
-```
-
-```json
-{
-  "sourceWalletId": "00000000-0000-0000-0000-000000000001",
-  "destinationWalletId": "00000000-0000-0000-0000-000000000002",
-  "amountKobo": 1000000
-}
-```
-
-### Statement
-
-```http
-GET /api/wallets/{walletId}/statement?page=1&pageSize=20
-Authorization: Bearer <token>
-```
-
-Transactions are returned newest first.
-
----
-
-## Running with Docker
-
-### Prerequisite
-
-Docker Desktop or another Docker Engine with Compose support.
-
-### Start
-
-```bash
-docker compose up
-```
-
-Expected URL:
-
-```text
-API:     http://localhost:8080
-Swagger: http://localhost:8080/swagger
-```
-
-> Verify the final ports after implementation and update this README if they differ.
-
-On startup the API should wait/retry until SQL Server is ready and then apply EF Core migrations.
-
-### Stop
-
-```bash
-docker compose down
-```
-
-To also remove local database volumes:
-
-```bash
-docker compose down -v
-```
-
----
-
-## JWT for local evaluation
-
-The service uses configurable JWT bearer validation.
-
-Expected configuration keys:
-
-```text
-Jwt__Issuer
-Jwt__Audience
-Jwt__SigningKey
-```
-
-If a development-only token endpoint is implemented, document its exact route and sample request here after implementation.
-
-Do not expose a development token issuer in Production.
-
-### TODO after implementation
-
-Replace this section with one verified method for obtaining a local test JWT and a copy/paste-ready example.
-
----
+Unexpected failures are logged server-side; SQL messages and stack traces are not returned to clients.
 
 ## Configuration
 
-Expected configuration:
+Compose accepts overrides from environment variables or an untracked `.env` file:
 
-```json
-{
-  "WalletOptions": {
-    "DailyOutboundLimitKobo": 50000000
-  },
-  "Jwt": {
-    "Issuer": "NovaWallet.Local",
-    "Audience": "NovaWallet.Api",
-    "SigningKey": "supplied-through-environment"
-  }
-}
+| Compose variable | Default |
+|---|---|
+| `API_PORT` | `8080` |
+| `SQL_PORT` | `14333` |
+| `MSSQL_SA_PASSWORD` | Development-only password in Compose |
+| `JWT_ISSUER` | `NovaWallet.Local` |
+| `JWT_AUDIENCE` | `NovaWallet.Api` |
+| `JWT_SIGNING_KEY` | Development-only signing key in Compose |
+| `DAILY_OUTBOUND_LIMIT_KOBO` | `50000000` |
+
+The API configuration keys are `ConnectionStrings:NovaWallet`, `Jwt:Issuer`, `Jwt:Audience`, `Jwt:SigningKey`, `WalletOptions:DailyOutboundLimitKobo`, and `Database:ApplyMigrations`. Use double underscores for environment variables, for example `Jwt__SigningKey`.
+
+For local debugging with the .NET 8 SDK (or later):
+
+```sh
+docker compose up -d sqlserver
+dotnet run --project NovaWallet.API.csproj --launch-profile http
 ```
 
-Local Docker defaults may exist so that `docker compose up` works without setup. They are development credentials only and must be environment-overridable.
+This serves http://localhost:5298/swagger using the development settings. If Compose credentials or SQL port are overridden, supply the corresponding `ConnectionStrings__NovaWallet` override for the local process. Production has no default connection or JWT key and does not automatically migrate unless explicitly configured.
 
----
+## Architecture and correctness
 
-## Error responses
+`NovaWallet.API.sln` contains the root API project and the Domain, Repositories, Service, UnitTests and IntegrationTests projects. Domain has no infrastructure dependency; Service uses Domain repository contracts; Repositories implements them with EF Core 8 and SQL Server; API wires both implementations through DI. The original solution format was converted from `.slnx` to `.sln` for .NET 8 SDK compatibility.
 
-Errors use RFC 7807 Problem Details.
+Transfers:
 
-Examples of machine-readable error codes may include:
+1. Begin a SQL transaction and acquire transaction-owned `sp_getapplock` for `transfer-idempotency:{key}`.
+2. Check the durable record against SHA-256 of the canonical lowercase GUIDs and invariant integer amount, separated by `|`.
+3. Replay the exact stored HTTP status and JSON for a match; reject a different payload with 409.
+4. Acquire `UPDLOCK, HOLDLOCK` wallet locks in deterministic GUID order using separate parameterized reads.
+5. Check funds and daily usage after the source lock is held. Capture time after lock acquisition using injected `TimeProvider`.
+6. Mutate both balances with checked integer arithmetic; add paired ledger/audit entries and the serialized response; save and commit once.
 
-```text
-wallet_not_found
-insufficient_funds
-daily_limit_exceeded
-idempotency_conflict
-```
+No process-local lock participates in financial correctness. SQL locks protect competing API instances. Credit uses the same wallet-lock/transaction strategy and always writes a ledger entry and audit entry.
 
-Expected mappings:
+Daily limit: 50,000,000 kobo (NGN 500,000) by default, outbound transfer debits only. WAT is UTC+01:00; queries use UTC timestamps in `[WAT midnight, next WAT midnight)`. The limit query remains inside the source-wallet lock. Boundary arithmetic avoids `long` overflow.
 
-```text
-400 - invalid request / missing idempotency key
-404 - wallet not found
-409 - duplicate customer / idempotency conflict
-422 - insufficient funds / daily limit exceeded
-500 - unexpected internal error
-```
+Idempotency keys are required, trimmed, case-sensitive, service-wide and limited to 128 characters. SQL binary collation matches application-lock equality. Completed transfers are retained indefinitely; failed transactions do not reserve their keys. Replays return the original balance snapshots. Credits are intentionally not idempotent: retrying a credit can credit twice.
 
-Internal SQL or stack-trace details are not returned to clients.
+The database enforces nonnegative balances, positive ledger amounts, unique customer IDs and unique idempotency keys. Audit rows are separate, linked one-to-one to ledger rows, and protected by an `INSTEAD OF UPDATE, DELETE` trigger. EF disables SQL OUTPUT for the triggered audit table. These protections cover ordinary DML; a database administrator can still change/drop schema or disable triggers.
 
----
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design and [docs/VERIFICATION.md](docs/VERIFICATION.md) for acceptance evidence.
 
 ## Tests
 
-Run:
-
-```bash
-dotnet test
+```sh
+dotnet build NovaWallet.API.sln
+dotnet test NovaWallet.API.sln
+# Fast deterministic tests only:
+dotnet test NovaWallet.UnitTests/NovaWallet.UnitTests.csproj
 ```
 
-The integration test suite uses a real SQL Server engine.
+Integration tests require a running Docker engine. Testcontainers downloads SQL Server 2022, applies the real EF migration, and gives each test a distinct database. They do not use EF InMemory and do not silently skip when Docker is unavailable. Temporary containers are cleaned up by Testcontainers.
 
-Key concurrency scenarios:
+Coverage includes 20-request overspend contention across two API hosts (exactly 10 successes and 10 insufficient-funds failures), concurrent same-key replay across hosts, fresh-host replay, daily-limit contention, WAT midnight, audit immutability, injected audit-write failure, overflow rollback, opposing transfers with concurrent credits, JWT protection, duplicate customers, database constraints and stable statement pagination. Unit tests cover canonical hashing, WAT boundaries, overflow-safe limit arithmetic and request validation.
 
-### Overspend protection
+## Assumptions and trade-offs
 
-A funded source wallet receives 20 concurrent transfer requests where only 10 can be covered.
+- This models a trusted authenticated operator API: any authenticated subject can access all wallets and credit funds. Customer ownership authorization and production identity/KYC are outside scope.
+- One wallet per trimmed customer ID; customer uniqueness follows SQL Server's database collation (case-insensitive in the supplied container).
+- Credit simulates an inbound payment; no payment-rail, NIBSS, BVN/NIN or external HTTP integration is performed.
+- Pessimistic locking favors correctness over same-wallet write throughput. SQL Server-specific locks intentionally reduce portability.
+- Stored balances provide fast reads and require ledger/audit writes in the same transaction. Arbitrary privileged database edits are outside the application's guarantee.
+- Lock timeouts, deadlocks or unexpected DB failures roll back and return 500. There is no hidden automatic credit retry. Transfers can be retried with the same key, including after an ambiguous network response.
+- The configured daily limit should be consistent across replicas. No idempotency expiry/retention policy, outbox, message broker or rate limiter is implemented.
 
-Expected:
+Optional stretch goals are not implemented: health/readiness HTTP endpoints, custom correlation-ID propagation, transfer rate limiting and a transactional outbox. Database startup readiness is handled by the Compose health gate and migration retry loop.
 
-```text
-10 succeed
-10 are rejected
-source ends at 0
-destination receives exactly the funded amount
-no balance becomes negative
-```
+## Security and deployment
 
-### Concurrent idempotent replay
+The checked-in Docker/development credentials are public local defaults, never production secrets. Replace them and use a proper JWT issuer, TLS and least-privilege SQL credentials for deployment. The JWT signing key must contain at least 32 UTF-8 bytes. The development issuer is absent outside Development. Swagger is enabled in all environments and should be restricted at the deployment boundary if needed.
 
-Multiple identical concurrent requests use the same idempotency key.
+Compose uses `sa` for evaluator setup and migrations. In production, run migrations once as a deployment step with a separate privileged account; application instances should not race schema migrations and should not have DDL permissions. Do not expose the development token route or trusted credit API publicly. JWTs, signing keys and full customer payloads are not application log fields.
 
-Expected:
-
-```text
-one financial transfer
-one debit row
-one credit row
-one idempotency record
-replays return the original result
-```
-
-### Daily limit contention
-
-Concurrent transfers are arranged so their combined value would exceed the configured daily limit.
-
-Expected:
-
-```text
-committed outbound value never exceeds the limit
-```
-
-### Audit immutability
-
-A direct SQL attempt to update/delete an audit record is rejected by the database.
-
----
-
-## Security notes
-
-- All functional endpoints require JWT authentication.
-- Secrets are configuration/environment values.
-- Tokens and signing keys are not logged.
-- Inputs are validated.
-- SQL access is parameterized through EF Core/raw parameterized commands.
-- Error responses do not expose internal database details.
-- Audit actor information may record the authenticated `sub` claim.
-
-This is a take-home implementation, not a complete production identity or KYC platform.
-
----
-
-## Audit trail
-
-Every balance mutation creates an `AuditLog` record separate from normal transaction history.
-
-The application does not expose audit mutation endpoints.
-
-The database additionally rejects `UPDATE` and `DELETE` on the audit table.
-
----
-
-## Assumptions
-
-- Currency is NGN only.
-- One wallet exists per supplied customer ID.
-- Credit simulates a successful inbound NIP transfer; no actual NIBSS integration is performed.
-- The transfer daily limit applies only to outbound wallet-to-wallet transfer debits.
-- WAT is treated as UTC+1.
-- External KYC, NIN/BVN, USSD, and payment-rail integration are out of scope.
-- Transfer idempotency keys are treated as unique within this service.
-- The selected datastore is SQL Server.
-
-Any implementation change to these assumptions should be documented here before submission.
-
----
-
-## Design trade-offs
-
-### Pessimistic database locking
-
-The service deliberately serializes competing mutations against the same wallet for correctness.
-
-This reduces same-wallet write concurrency but avoids double-spend behavior and remains valid with multiple API instances.
-
-### Stored current balance
-
-The wallet stores its current balance instead of recomputing it from all transaction history on every request.
-
-To prevent inconsistency, balance changes, transaction history, audit history, and transfer idempotency are committed atomically.
-
-### SQL Server-specific concurrency behavior
-
-The implementation uses SQL Server primitives such as `UPDLOCK`, `HOLDLOCK`, and a transaction-owned application lock.
-
-This reduces datastore portability but makes the concurrency contract explicit for the selected database.
-
----
-
-## AI-assisted development
-
-AI tooling is intentionally used during architecture review and implementation.
-
-The workflow is:
-
-```text
-requirements
--> architecture/invariants
--> detailed implementation prompt
--> agent implementation
--> code review
--> adversarial/concurrency tests
--> corrections
-```
-
-See [AI_USAGE.md](./AI_USAGE.md) for the tools, prompts, outputs, and at least one concrete case where AI-generated or AI-suggested work required correction.
-
----
-
-## Stretch goals
-
-Only list items here if they are actually implemented:
-
-- [ ] health/readiness endpoints
-- [ ] request correlation IDs
-- [ ] transfer rate limiting
-- [ ] transactional outbox with `TransferCompleted`
-
-Remove or mark items accurately before submission.
-
----
-
-## Final submission check
-
-Before sending the repository:
-
-```text
-[ ] docker compose up works from a clean checkout
-[ ] Swagger loads
-[ ] JWT flow is documented and verified
-[ ] all required endpoints work
-[ ] dotnet test passes
-[ ] concurrency tests use real SQL Server
-[ ] README commands are copy/paste verified
-[ ] AI_USAGE.md contains actual, truthful examples
-[ ] no real secrets are committed
-[ ] no TODO text remains that should have been resolved
-```
-
-
-## Incremental AI-assisted implementation
-
-The coding agent is instructed to work in logical phases and create small local Git commits after each verified phase rather than producing one large AI-generated commit. It must not push automatically.
-
-Expected history is roughly:
-
-```text
-feat: add wallet ledger domain and persistence foundation
-feat: add wallet operations authentication and API contracts
-feat: add atomic transfer idempotency and daily limits
-test: add ledger concurrency and idempotency integration coverage
-chore: add dockerized local environment and service readiness
-docs: finalize architecture usage and run instructions
-```
-
-This README currently describes the target design. Before submission it must be checked against the actual implementation and updated so every command, route, port, test claim, and architecture statement is accurate.
+[AI_USAGE.md](AI_USAGE.md) records observed implementation corrections and verification limits. Work is committed locally in reviewable phases; nothing is pushed automatically.

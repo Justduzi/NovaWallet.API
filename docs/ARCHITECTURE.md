@@ -24,9 +24,9 @@ The system must guarantee these invariants:
 The existing Visual Studio solution uses these exact project names:
 
 ```text
-NovaWallet.sln
+NovaWallet.API.sln
 
-NovaWallet.Api/
+NovaWallet.API.csproj  # API is at repository root
 NovaWallet.Domain/
 NovaWallet.Repositories/
 NovaWallet.Service/
