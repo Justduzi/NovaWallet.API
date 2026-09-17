@@ -18,6 +18,7 @@
 
   <ItemGroup>
     <Using Include="Xunit" />
+    <ProjectReference Include="../NovaWallet.API.csproj" />
   </ItemGroup>
 
 </Project>

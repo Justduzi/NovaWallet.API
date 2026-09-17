@@ -13,6 +13,8 @@
     <ProjectReference Include="NovaWallet.Service/NovaWallet.Service.csproj" />
     <ProjectReference Include="NovaWallet.Repositories/NovaWallet.Repositories.csproj" />
     <PackageReference Include="Swashbuckle.AspNetCore" Version="6.6.2" />
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="8.0.27" />
+    <PackageReference Include="FluentValidation.DependencyInjectionExtensions" Version="11.11.0" />
   </ItemGroup>
 
 </Project>
