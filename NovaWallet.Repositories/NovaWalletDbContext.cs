@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using NovaWallet.Domain;
 
 namespace NovaWallet.Repositories;
@@ -54,5 +55,12 @@ public sealed class NovaWalletDbContext(DbContextOptions<NovaWalletDbContext> op
         idempotency.HasIndex(x => x.IdempotencyKey).IsUnique();
         idempotency.Property(x => x.RequestHash).HasColumnType("char(64)").IsRequired();
         idempotency.Property(x => x.ResponseBody).IsRequired();
+
+        // datetime2 stores UTC clock values but not DateTime.Kind; restore the UTC marker on reads.
+        var utc = new ValueConverter<DateTime, DateTime>(value => value,
+            value => DateTime.SpecifyKind(value, DateTimeKind.Utc));
+        foreach (var entity in model.Model.GetEntityTypes())
+            foreach (var property in entity.GetProperties().Where(p => p.ClrType == typeof(DateTime)))
+                property.SetValueConverter(utc);
     }
 }

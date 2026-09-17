@@ -18,6 +18,9 @@
 
   <ItemGroup>
     <Using Include="Xunit" />
+    <ProjectReference Include="../NovaWallet.API.csproj" />
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="8.0.27" />
+    <PackageReference Include="Testcontainers.MsSql" Version="3.10.0" />
   </ItemGroup>
 
 </Project>
