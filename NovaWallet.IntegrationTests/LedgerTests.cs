@@ -76,6 +76,7 @@ public sealed class LedgerTests(SqlServerFixture fixture) : IClassFixture<SqlSer
         Assert.Equal(10, await db.WalletTransactions.CountAsync(x => x.Type == WalletTransactionType.TransferCredit));
         Assert.Equal(20, await db.AuditLogs.CountAsync(x => x.MutationType != "Credit"));
         Assert.Equal(10, await db.IdempotencyRecords.CountAsync());
+        Assert.Equal(10, await db.OutboxMessages.CountAsync());
         Assert.All(await db.AuditLogs.ToListAsync(), x => Assert.Equal("integration-actor", x.ActorSubject));
     }
 
@@ -106,6 +107,19 @@ public sealed class LedgerTests(SqlServerFixture fixture) : IClassFixture<SqlSer
         Assert.Equal(1, await db.WalletTransactions.CountAsync(x => x.Type == WalletTransactionType.TransferCredit));
         Assert.Equal(2, await db.AuditLogs.CountAsync(x => x.MutationType != "Credit"));
         Assert.Equal(1, await db.IdempotencyRecords.CountAsync());
+        var message = await db.OutboxMessages.SingleAsync();
+        Assert.Equal(nameof(TransferCompleted), message.EventType);
+        Assert.Equal(1, message.SchemaVersion);
+        Assert.Null(message.PublishedAtUtc);
+        var completed = JsonSerializer.Deserialize<TransferCompleted>(message.Payload, new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+        var result = JsonSerializer.Deserialize<TransferResult>(bodies[0], new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+        Assert.Equal(message.Id, completed.EventId);
+        Assert.Equal(result.Reference, completed.Reference);
+        Assert.Equal(result.Reference, message.TransferReference);
+        Assert.Equal(source.Id, completed.SourceWalletId);
+        Assert.Equal(destination.Id, completed.DestinationWalletId);
+        Assert.Equal(1_000_000, completed.AmountKobo);
+        Assert.Equal("NGN", completed.Currency);
     }
 
     [Fact]
@@ -161,6 +175,7 @@ public sealed class LedgerTests(SqlServerFixture fixture) : IClassFixture<SqlSer
         Assert.Equal(1, await db.WalletTransactions.CountAsync());
         Assert.Equal(1, await db.AuditLogs.CountAsync());
         Assert.Equal(0, await db.IdempotencyRecords.CountAsync());
+        Assert.Empty(await db.OutboxMessages.ToListAsync());
         await db.Database.ExecuteSqlRawAsync("DROP TRIGGER dbo.TestFailAudit");
         Assert.Equal(HttpStatusCode.OK, (await Transfer(client, source.Id, destination.Id, 50, "rollback")).StatusCode);
     }
@@ -183,6 +198,7 @@ public sealed class LedgerTests(SqlServerFixture fixture) : IClassFixture<SqlSer
         Assert.Equal(2, await db.WalletTransactions.CountAsync());
         Assert.Equal(2, await db.AuditLogs.CountAsync());
         Assert.Empty(await db.IdempotencyRecords.ToListAsync());
+        Assert.Empty(await db.OutboxMessages.ToListAsync());
     }
 
     [Fact]

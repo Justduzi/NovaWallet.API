@@ -75,3 +75,18 @@ Financial state checks remain inside the SQL transaction and wallet locks. No da
 The replay path returns persisted status and JSON directly instead of deserializing and reserializing, preserving the original response exactly. Checked arithmetic rejects unsupported balances; daily-limit comparison subtracts from the limit to avoid overflow.
 
 The implementation uses trusted-operator JWT authorization, not per-customer ownership authorization. Credits are not idempotent. Audit DML protection does not protect against an administrator changing schema. The README states these limits, along with production migration/credential assumptions.
+
+## Stretch-goal review
+
+The later user instruction was to push the completed core implementation, implement every optional stretch goal, commit, and push again. The core six commits were pushed first. The stretch implementation added readiness/liveness endpoints, bounded correlation IDs, per-subject transfer rate limiting, and a versioned `TransferCompleted` SQL outbox row.
+
+Review focused on preserving financial behavior around the additions:
+
+- correlation state is scoped per request, with concurrent tests proving IDs do not cross requests;
+- the rate limiter runs after authentication and before controller/service execution, and rejection tests assert no balance, audit, idempotency, or outbox side effects;
+- outbox insertion occurs before the existing `SaveChanges` and commit in the transfer transaction;
+- an injected outbox constraint failure proves balances, ledger, audit, idempotency, and outbox all roll back and the same idempotency key remains reusable;
+- replays return the persisted response without inserting a second event;
+- readiness detects both an unavailable database and a deliberately removed migration-history row, while liveness remains independent of SQL Server.
+
+The outbox is deliberately a durable pending-event store, not a claim of delivery. No broker or dispatcher was added merely to display complexity.

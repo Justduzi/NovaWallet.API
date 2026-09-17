@@ -19,7 +19,7 @@ public sealed class LedgerExceptionHandler(ILogger<LedgerExceptionHandler> logge
         var problem = new ProblemDetails { Status = status, Title = status == 500 ? "An unexpected error occurred." : "Request could not be completed.",
             Detail = exception is LedgerException ? exception.Message : null, Instance = context.Request.Path };
         problem.Extensions["code"] = code;
-        problem.Extensions["traceId"] = context.TraceIdentifier;
+        ProblemDetailsMetadata.Enrich(context, problem);
         if (exception is ValidationException validation)
             problem.Extensions["errors"] = validation.Errors.GroupBy(x => x.PropertyName)
                 .ToDictionary(x => x.Key, x => x.Select(e => e.ErrorMessage).ToArray());

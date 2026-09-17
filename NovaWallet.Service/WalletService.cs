@@ -2,7 +2,7 @@ using NovaWallet.Domain;
 
 namespace NovaWallet.Service;
 
-public sealed class WalletService(ILedgerRepository repository, TimeProvider clock)
+public sealed class WalletService(ILedgerRepository repository, TimeProvider clock, OperationContext context)
 {
     public async Task<Wallet> CreateAsync(string customerId, CancellationToken ct)
     {
@@ -24,7 +24,7 @@ public sealed class WalletService(ILedgerRepository repository, TimeProvider clo
         await using var transaction = await repository.BeginTransactionAsync(ct);
         var wallet = await repository.GetWalletAsync(walletId, true, ct) ?? throw MissingWallet();
         var mutation = RecordMutation(repository, wallet, amountKobo, WalletTransactionType.Credit,
-            Guid.NewGuid(), null, actor, clock.GetUtcNow().UtcDateTime);
+            Guid.NewGuid(), null, actor, clock.GetUtcNow().UtcDateTime, context.CorrelationId);
         await repository.SaveAsync(ct);
         await repository.CommitAsync(ct);
         return mutation;
@@ -41,7 +41,7 @@ public sealed class WalletService(ILedgerRepository repository, TimeProvider clo
     internal static LedgerException MissingWallet() => new("wallet_not_found", "Wallet was not found.");
 
     internal static WalletTransaction RecordMutation(ILedgerRepository repository, Wallet wallet, long amount,
-        WalletTransactionType type, Guid reference, Guid? counterparty, string? actor, DateTime now)
+        WalletTransactionType type, Guid reference, Guid? counterparty, string? actor, DateTime now, string? correlationId)
     {
         var before = wallet.BalanceKobo;
         var delta = type == WalletTransactionType.TransferDebit ? -amount : amount;
@@ -57,7 +57,7 @@ public sealed class WalletService(ILedgerRepository repository, TimeProvider clo
         repository.Add(entry);
         repository.Add(new AuditLog { WalletId = wallet.Id, WalletTransactionId = entry.Id,
             MutationType = type.ToString(), DeltaKobo = delta, BalanceBeforeKobo = before,
-            BalanceAfterKobo = after, ActorSubject = actor, CreatedAtUtc = now });
+            BalanceAfterKobo = after, ActorSubject = actor, CreatedAtUtc = now, CorrelationId = correlationId });
         return entry;
     }
 }

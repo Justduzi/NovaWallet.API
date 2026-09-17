@@ -2,6 +2,12 @@
 @token = paste-development-access-token-here
 @walletId = paste-created-wallet-id-here
 
+### Anonymous process liveness
+GET {{host}}/health/live
+
+### Anonymous SQL/migration readiness
+GET {{host}}/health/ready
+
 ### Development only: copy accessToken from the response into @token
 POST {{host}}/dev/token
 

@@ -51,4 +51,5 @@ public sealed class LedgerRepository(NovaWalletDbContext db) : ILedgerRepository
     public void Add(WalletTransaction transaction) => db.WalletTransactions.Add(transaction);
     public void Add(AuditLog audit) => db.AuditLogs.Add(audit);
     public void Add(IdempotencyRecord record) => db.IdempotencyRecords.Add(record);
+    public void Add(OutboxMessage message) => db.OutboxMessages.Add(message);
 }

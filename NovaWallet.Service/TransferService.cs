@@ -4,7 +4,7 @@ using NovaWallet.Domain;
 
 namespace NovaWallet.Service;
 
-public sealed class TransferService(ILedgerRepository repository, TimeProvider clock, IOptions<WalletOptions> options)
+public sealed class TransferService(ILedgerRepository repository, TimeProvider clock, IOptions<WalletOptions> options, OperationContext context)
 {
     private static readonly JsonSerializerOptions ResponseJson = new(JsonSerializerDefaults.Web);
 
@@ -47,14 +47,20 @@ public sealed class TransferService(ILedgerRepository repository, TimeProvider c
 
         var reference = Guid.NewGuid();
         WalletService.RecordMutation(repository, source, amountKobo, WalletTransactionType.TransferDebit,
-            reference, destinationId, actor, now.UtcDateTime);
+            reference, destinationId, actor, now.UtcDateTime, context.CorrelationId);
         WalletService.RecordMutation(repository, destination, amountKobo, WalletTransactionType.TransferCredit,
-            reference, sourceId, actor, now.UtcDateTime);
+            reference, sourceId, actor, now.UtcDateTime, context.CorrelationId);
         var result = new TransferResult(reference, sourceId, destinationId, amountKobo,
             source.BalanceKobo, destination.BalanceKobo, now.UtcDateTime);
         var body = JsonSerializer.Serialize(result, ResponseJson);
         repository.Add(new IdempotencyRecord { IdempotencyKey = key, RequestHash = hash, ResponseStatusCode = 200,
             ResponseBody = body, CreatedAtUtc = now.UtcDateTime });
+        var eventId = Guid.NewGuid();
+        var completed = new TransferCompleted(eventId, reference, sourceId, destinationId, amountKobo,
+            source.Currency, now.UtcDateTime, context.CorrelationId);
+        repository.Add(new OutboxMessage { Id = eventId, TransferReference = reference,
+            EventType = nameof(TransferCompleted), Payload = JsonSerializer.Serialize(completed, ResponseJson),
+            CorrelationId = context.CorrelationId, CreatedAtUtc = now.UtcDateTime });
         await repository.SaveAsync(ct);
         await repository.CommitAsync(ct);
         return new(200, body);

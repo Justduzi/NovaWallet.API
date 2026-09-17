@@ -71,4 +71,5 @@ public interface ILedgerRepository
     void Add(WalletTransaction transaction);
     void Add(AuditLog audit);
     void Add(IdempotencyRecord record);
+    void Add(OutboxMessage message);
 }

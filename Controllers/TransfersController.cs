@@ -1,6 +1,8 @@
 using FluentValidation;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
+using NovaWallet.API.Infrastructure;
 using NovaWallet.API.Contracts;
 using NovaWallet.Domain;
 using NovaWallet.Service;
@@ -11,7 +13,9 @@ namespace NovaWallet.API.Controllers;
 public sealed class TransfersController(TransferService service, ILogger<TransfersController> logger) : ControllerBase
 {
     [HttpPost]
+    [EnableRateLimiting(TransferRateLimitPolicy.Name)]
     [ProducesResponseType(typeof(TransferResult), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status429TooManyRequests)]
     public async Task<IActionResult> Transfer(TransferRequest request,
         [FromHeader(Name = "Idempotency-Key")] string? idempotencyKey,
         [FromServices] IValidator<TransferRequest> validator,

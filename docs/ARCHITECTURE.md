@@ -752,6 +752,17 @@ Priority order:
 
 Do not sacrifice concurrency tests, idempotency, Docker reliability, or documentation for stretch goals.
 
+### Implemented stretch goals
+
+All four optional goals were subsequently implemented after the required suite passed:
+
+1. anonymous `/health/live` and SQL/migration-aware `/health/ready` endpoints;
+2. bounded `X-Correlation-ID` propagation through response headers, structured log scopes, Problem Details, audits, and outbox payloads;
+3. configurable fixed-window rate limiting on transfers, partitioned by authenticated subject;
+4. one versioned `TransferCompleted` outbox row committed in the transfer transaction.
+
+The outbox has no dispatcher or broker in this exercise. It stores durable pending events for a future delivery worker. Rate limiting is per API process and protects capacity; SQL transactions remain the financial correctness boundary.
+
 ---
 
 ## 20. Design trade-offs to be ready to defend

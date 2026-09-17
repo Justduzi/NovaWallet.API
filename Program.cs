@@ -13,16 +13,27 @@ using NovaWallet.Service;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddControllers().ConfigureApiBehaviorOptions(options =>
-    options.InvalidModelStateResponseFactory = context => new BadRequestObjectResult(new ValidationProblemDetails(context.ModelState)
-    { Status = 400, Title = "Invalid request.", Extensions = { ["code"] = "validation" } })
-    { ContentTypes = { "application/problem+json" } });
+    options.InvalidModelStateResponseFactory = context => {
+        var problem = new ValidationProblemDetails(context.ModelState)
+            { Status = 400, Title = "Invalid request.", Extensions = { ["code"] = "validation" } };
+        ProblemDetailsMetadata.Enrich(context.HttpContext, problem);
+        return new BadRequestObjectResult(problem) { ContentTypes = { "application/problem+json" } };
+    });
 builder.Services.AddValidatorsFromAssemblyContaining<CreateWalletValidator>();
 builder.Services.AddExceptionHandler<LedgerExceptionHandler>();
 builder.Services.AddProblemDetails(options => options.CustomizeProblemDetails = context =>
 {
     context.ProblemDetails.Extensions.TryAdd("code", context.ProblemDetails.Status switch {
         401 => "unauthorized", 403 => "forbidden", 404 => "not_found", _ => "http_error" });
+    ProblemDetailsMetadata.Enrich(context.HttpContext, context.ProblemDetails);
 });
+builder.Services.AddScoped<OperationContext>();
+builder.Logging.AddJsonConsole(options => options.IncludeScopes = true);
+builder.Services.AddHealthChecks().AddCheck<LedgerHealthCheck>("sqlserver", tags: ["ready"], timeout: TimeSpan.FromSeconds(5));
+builder.Services.AddOptions<TransferRateLimitOptions>().BindConfiguration("TransferRateLimit")
+    .Validate(options => options.PermitLimit > 0 && options.WindowSeconds is > 0 and <= 86400,
+        "Transfer rate limit requires positive permits and a window of 1 to 86400 seconds.").ValidateOnStart();
+builder.Services.AddRateLimiter(options => options.AddPolicy<string, TransferRateLimitPolicy>(TransferRateLimitPolicy.Name));
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddDbContext<NovaWalletDbContext>(options => options.UseSqlServer(
     builder.Configuration.GetConnectionString("NovaWallet") ?? throw new InvalidOperationException("ConnectionStrings:NovaWallet is required.")));
@@ -61,14 +72,18 @@ builder.Services.AddSwaggerGen(options =>
 });
 var app = builder.Build();
 await app.ApplyMigrationsAsync();
+app.UseMiddleware<CorrelationMiddleware>();
 app.UseExceptionHandler();
 app.UseStatusCodePages();
 app.UseSwagger();
 app.UseSwaggerUI();
+app.UseRouting();
 app.UseAuthentication();
 app.UseAuthorization();
+app.UseRateLimiter();
 app.MapControllers();
 app.MapDevelopmentToken();
+LedgerHealthCheck.MapEndpoints(app);
 app.Run();
 
 public partial class Program;

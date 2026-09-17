@@ -27,6 +27,8 @@ services:
       Jwt__Audience: ${JWT_AUDIENCE:-NovaWallet.Api}
       Jwt__SigningKey: ${JWT_SIGNING_KEY:-NovaWallet-Development-Only-Key-Change-Before-Production-2026}
       WalletOptions__DailyOutboundLimitKobo: ${DAILY_OUTBOUND_LIMIT_KOBO:-50000000}
+      TransferRateLimit__PermitLimit: ${TRANSFER_RATE_PERMIT_LIMIT:-60}
+      TransferRateLimit__WindowSeconds: ${TRANSFER_RATE_WINDOW_SECONDS:-60}
       Database__ApplyMigrations: "true"
     depends_on:
       sqlserver:

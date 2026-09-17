@@ -17,6 +17,8 @@ docker compose up --build
 | API | http://localhost:8080 |
 | Swagger UI | http://localhost:8080/swagger |
 | OpenAPI JSON | http://localhost:8080/swagger/v1/swagger.json |
+| Liveness | http://localhost:8080/health/live |
+| Readiness | http://localhost:8080/health/ready |
 | Local SQL connection | localhost,14333 |
 
 Ports bind to localhost. Compose uses a persistent `ledger-data` volume. `docker compose down` stops the services and retains data; `docker compose down -v` also deletes that local data.
@@ -101,8 +103,10 @@ Compose accepts overrides from environment variables or an untracked `.env` file
 | `JWT_AUDIENCE` | `NovaWallet.Api` |
 | `JWT_SIGNING_KEY` | Development-only signing key in Compose |
 | `DAILY_OUTBOUND_LIMIT_KOBO` | `50000000` |
+| `TRANSFER_RATE_PERMIT_LIMIT` | `60` |
+| `TRANSFER_RATE_WINDOW_SECONDS` | `60` |
 
-The API configuration keys are `ConnectionStrings:NovaWallet`, `Jwt:Issuer`, `Jwt:Audience`, `Jwt:SigningKey`, `WalletOptions:DailyOutboundLimitKobo`, and `Database:ApplyMigrations`. Use double underscores for environment variables, for example `Jwt__SigningKey`.
+The API configuration keys are `ConnectionStrings:NovaWallet`, `Jwt:Issuer`, `Jwt:Audience`, `Jwt:SigningKey`, `WalletOptions:DailyOutboundLimitKobo`, `TransferRateLimit:PermitLimit`, `TransferRateLimit:WindowSeconds`, and `Database:ApplyMigrations`. Use double underscores for environment variables, for example `Jwt__SigningKey`.
 
 For local debugging with the .NET 8 SDK (or later):
 
@@ -124,7 +128,7 @@ Transfers:
 3. Replay the exact stored HTTP status and JSON for a match; reject a different payload with 409.
 4. Acquire `UPDLOCK, HOLDLOCK` wallet locks in deterministic GUID order using separate parameterized reads.
 5. Check funds and daily usage after the source lock is held. Capture time after lock acquisition using injected `TimeProvider`.
-6. Mutate both balances with checked integer arithmetic; add paired ledger/audit entries and the serialized response; save and commit once.
+6. Mutate both balances with checked integer arithmetic; add paired ledger/audit entries, the serialized response and a `TransferCompleted` outbox row; save and commit once.
 
 No process-local lock participates in financial correctness. SQL locks protect competing API instances. Credit uses the same wallet-lock/transaction strategy and always writes a ledger entry and audit entry.
 
@@ -133,6 +137,15 @@ Daily limit: 50,000,000 kobo (NGN 500,000) by default, outbound transfer debits 
 Idempotency keys are required, trimmed, case-sensitive, service-wide and limited to 128 characters. SQL binary collation matches application-lock equality. Completed transfers are retained indefinitely; failed transactions do not reserve their keys. Replays return the original balance snapshots. Credits are intentionally not idempotent: retrying a credit can credit twice.
 
 The database enforces nonnegative balances, positive ledger amounts, unique customer IDs and unique idempotency keys. Audit rows are separate, linked one-to-one to ledger rows, and protected by an `INSTEAD OF UPDATE, DELETE` trigger. EF disables SQL OUTPUT for the triggered audit table. These protections cover ordinary DML; a database administrator can still change/drop schema or disable triggers.
+
+## Operational features
+
+- `GET /health/live` reports process liveness without querying SQL Server. `GET /health/ready` verifies the database connection, applied migrations, and access to the wallet and outbox tables. Both endpoints are anonymous for orchestrator probes and return no database details.
+- Every response includes `X-Correlation-ID`. A caller may supply one using 1–100 ASCII letters, digits, `.`, `_`, or `-`; invalid values are replaced. The ID is included in structured log scopes, Problem Details, audit entries, and transfer outbox events. W3C trace IDs are separately returned as `traceId` in Problem Details.
+- `POST /api/transfers` is limited per authenticated `sub` claim with a fixed window. The default is 60 requests per 60 seconds. Rejections return 429 Problem Details with `rate_limit_exceeded` and `Retry-After`; rejected requests do not open a ledger transaction or reserve an idempotency key. Other endpoints are unaffected.
+- Each successful new transfer inserts one pending `TransferCompleted` outbox row in the same SQL transaction as balances, ledger, audit, and idempotency. Replays do not create another event. The JSON payload has schema version 1, integer kobo, NGN, UTC occurrence time, and correlation ID.
+
+The outbox provides durable handoff but this exercise does not publish events to a broker. `PublishedAtUtc` remains null until a future dispatcher sends an event. A production dispatcher must claim rows safely, publish idempotently, and mark delivery without assuming exactly-once broker semantics.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design and [docs/VERIFICATION.md](docs/VERIFICATION.md) for acceptance evidence.
 
@@ -147,7 +160,7 @@ dotnet test NovaWallet.UnitTests/NovaWallet.UnitTests.csproj
 
 Integration tests require a running Docker engine. Testcontainers downloads SQL Server 2022, applies the real EF migration, and gives each test a distinct database. They do not use EF InMemory and do not silently skip when Docker is unavailable. Temporary containers are cleaned up by Testcontainers.
 
-Coverage includes 20-request overspend contention across two API hosts (exactly 10 successes and 10 insufficient-funds failures), concurrent same-key replay across hosts, fresh-host replay, daily-limit contention, WAT midnight, audit immutability, injected audit-write failure, overflow rollback, opposing transfers with concurrent credits, JWT protection, duplicate customers, database constraints and stable statement pagination. Unit tests cover canonical hashing, WAT boundaries, overflow-safe limit arithmetic and request validation.
+Coverage includes 20-request overspend contention across two API hosts (exactly 10 successes and 10 insufficient-funds failures), concurrent same-key replay across hosts, fresh-host replay, daily-limit contention, WAT midnight, audit immutability, injected audit/outbox write failures, overflow rollback, opposing transfers with concurrent credits, JWT protection, duplicate customers, database constraints, stable statement pagination, liveness/readiness, correlation isolation, rate limiting and transactional outbox behavior. Unit tests cover canonical hashing, WAT boundaries, overflow-safe limit arithmetic, request validation and correlation-ID rules.
 
 ## Assumptions and trade-offs
 
@@ -157,9 +170,8 @@ Coverage includes 20-request overspend contention across two API hosts (exactly 
 - Pessimistic locking favors correctness over same-wallet write throughput. SQL Server-specific locks intentionally reduce portability.
 - Stored balances provide fast reads and require ledger/audit writes in the same transaction. Arbitrary privileged database edits are outside the application's guarantee.
 - Lock timeouts, deadlocks or unexpected DB failures roll back and return 500. There is no hidden automatic credit retry. Transfers can be retried with the same key, including after an ambiguous network response.
-- The configured daily limit should be consistent across replicas. No idempotency expiry/retention policy, outbox, message broker or rate limiter is implemented.
-
-Optional stretch goals are not implemented: health/readiness HTTP endpoints, custom correlation-ID propagation, transfer rate limiting and a transactional outbox. Database startup readiness is handled by the Compose health gate and migration retry loop.
+- The configured daily limit and rate-limit settings should be consistent across replicas. Rate limits are process-local operational protection, so a distributed gateway or shared limiter is required for one global quota across replicas. Financial correctness still lives in SQL Server.
+- No idempotency or outbox retention policy, message broker, or outbox dispatcher is implemented. Pending event rows therefore grow until an operational retention/delivery process is added.
 
 ## Security and deployment
 
@@ -167,4 +179,4 @@ The checked-in Docker/development credentials are public local defaults, never p
 
 Compose uses `sa` for evaluator setup and migrations. In production, run migrations once as a deployment step with a separate privileged account; application instances should not race schema migrations and should not have DDL permissions. Do not expose the development token route or trusted credit API publicly. JWTs, signing keys and full customer payloads are not application log fields.
 
-[AI_USAGE.md](AI_USAGE.md) records observed implementation corrections and verification limits. Work is committed locally in reviewable phases; nothing is pushed automatically.
+[AI_USAGE.md](AI_USAGE.md) records observed implementation corrections and verification limits. Work is committed in reviewable phases and pushed only when explicitly requested.

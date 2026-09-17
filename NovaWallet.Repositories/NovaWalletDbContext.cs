@@ -10,6 +10,7 @@ public sealed class NovaWalletDbContext(DbContextOptions<NovaWalletDbContext> op
     public DbSet<WalletTransaction> WalletTransactions => Set<WalletTransaction>();
     public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
     public DbSet<IdempotencyRecord> IdempotencyRecords => Set<IdempotencyRecord>();
+    public DbSet<OutboxMessage> OutboxMessages => Set<OutboxMessage>();
 
     protected override void OnModelCreating(ModelBuilder model)
     {
@@ -55,6 +56,15 @@ public sealed class NovaWalletDbContext(DbContextOptions<NovaWalletDbContext> op
         idempotency.HasIndex(x => x.IdempotencyKey).IsUnique();
         idempotency.Property(x => x.RequestHash).HasColumnType("char(64)").IsRequired();
         idempotency.Property(x => x.ResponseBody).IsRequired();
+
+        var outbox = model.Entity<OutboxMessage>();
+        outbox.ToTable("OutboxMessages", t => t.HasCheckConstraint("CK_Outbox_SchemaVersion", "[SchemaVersion] > 0"));
+        outbox.HasKey(x => x.Id);
+        outbox.Property(x => x.EventType).HasMaxLength(100).IsRequired();
+        outbox.Property(x => x.Payload).IsRequired();
+        outbox.Property(x => x.CorrelationId).HasMaxLength(100);
+        outbox.HasIndex(x => x.TransferReference).IsUnique();
+        outbox.HasIndex(x => new { x.CreatedAtUtc, x.Id }).HasFilter("[PublishedAtUtc] IS NULL");
 
         // datetime2 stores UTC clock values but not DateTime.Kind; restore the UTC marker on reads.
         var utc = new ValueConverter<DateTime, DateTime>(value => value,
