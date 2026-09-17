@@ -28,6 +28,9 @@ builder.Services.AddDbContext<NovaWalletDbContext>(options => options.UseSqlServ
     builder.Configuration.GetConnectionString("NovaWallet") ?? throw new InvalidOperationException("ConnectionStrings:NovaWallet is required.")));
 builder.Services.AddScoped<ILedgerRepository, LedgerRepository>();
 builder.Services.AddScoped<WalletService>();
+builder.Services.AddScoped<TransferService>();
+builder.Services.AddOptions<WalletOptions>().BindConfiguration("WalletOptions")
+    .Validate(options => options.DailyOutboundLimitKobo > 0, "Daily outbound limit must be positive.").ValidateOnStart();
 
 var jwt = builder.Configuration.GetSection("Jwt").Get<JwtOptions>() ?? new JwtOptions();
 if (string.IsNullOrWhiteSpace(jwt.Issuer) || string.IsNullOrWhiteSpace(jwt.Audience) || Encoding.UTF8.GetByteCount(jwt.SigningKey) < 32)
