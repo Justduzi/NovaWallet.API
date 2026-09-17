@@ -1,7 +1,7 @@
 <Solution>
-  <Project Path="../NovaWallet.IntegrationTests/NovaWallet.IntegrationTests.csproj" Id="41e3ae75-f4d4-47c0-990c-d5c5409b8fb9" />
   <Project Path="NovaWallet.API.csproj" />
   <Project Path="NovaWallet.Domain/NovaWallet.Domain.csproj" />
+  <Project Path="NovaWallet.IntegrationTests/NovaWallet.IntegrationTests.csproj" Id="6341c891-b658-417f-9bca-087fa771d145" />
   <Project Path="NovaWallet.Repositories/NovaWallet.Repositories.csproj" />
   <Project Path="NovaWallet.Service/NovaWallet.Service.csproj" />
   <Project Path="NovaWallet.UnitTests/NovaWallet.UnitTests.csproj" />
