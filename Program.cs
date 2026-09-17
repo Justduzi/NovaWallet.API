@@ -60,6 +60,7 @@ builder.Services.AddSwaggerGen(options =>
         [new OpenApiSecurityScheme { Reference = new OpenApiReference { Type = ReferenceType.SecurityScheme, Id = "Bearer" } }] = Array.Empty<string>() });
 });
 var app = builder.Build();
+await app.ApplyMigrationsAsync();
 app.UseExceptionHandler();
 app.UseStatusCodePages();
 app.UseSwagger();
@@ -67,6 +68,7 @@ app.UseSwaggerUI();
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
+app.MapDevelopmentToken();
 app.Run();
 
 public partial class Program;

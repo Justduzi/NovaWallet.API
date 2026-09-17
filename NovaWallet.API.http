@@ -1,6 +1,28 @@
-@NovaWallet.API_HostAddress = http://localhost:5298
+@host = http://localhost:5298
+@token = paste-development-access-token-here
+@walletId = paste-created-wallet-id-here
 
-GET {{NovaWallet.API_HostAddress}}/weatherforecast/
-Accept: application/json
+### Development only: copy accessToken from the response into @token
+POST {{host}}/dev/token
+
+### Use a new customer ID when repeating wallet creation
+POST {{host}}/api/wallets
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{"customerId":"http-demo-customer"}
 
 ###
+GET {{host}}/api/wallets/{{walletId}}/balance
+Authorization: Bearer {{token}}
+
+###
+POST {{host}}/api/wallets/{{walletId}}/credits
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{"amountKobo":10000000}
+
+###
+GET {{host}}/api/wallets/{{walletId}}/statement?page=1&pageSize=20
+Authorization: Bearer {{token}}
