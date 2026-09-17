@@ -1,0 +1,38 @@
+{
+  "LocalViewConfig": {
+    "ScanMode": "Auto",
+    "IssueDiffType": "All",
+    "SelectedScanType": "Sigma",
+    "SelectedHistoricalScanConfig": "",
+    "ActiveTab": "Local",
+    "LocalViewIssuesTablesColumns": {
+      "Polaris": [],
+      "Sigma": [
+        {
+          "ColumnId": "severity",
+          "ColumnWidth": "auto",
+          "Sortable": true
+        },
+        {
+          "ColumnId": "type",
+          "ColumnWidth": "*",
+          "Sortable": true
+        },
+        {
+          "ColumnId": "location",
+          "ColumnWidth": "150",
+          "Sortable": true
+        },
+        {
+          "ColumnId": "firstDetected",
+          "ColumnWidth": "*",
+          "Sortable": true
+        }
+      ],
+      "Coverity": [],
+      "CoverityCli": [],
+      "BlackDuck": [],
+      "Unspecified": []
+    }
+  }
+}
